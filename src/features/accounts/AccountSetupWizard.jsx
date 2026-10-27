@@ -14,7 +14,6 @@ export function AccountSetupWizard({onSave,currency='EGP'}){
   {name:'Cash',description:'Money you keep on hand',icon:'💵'},
   {name:'Bank account',description:'Your current or salary account',icon:'🏦'},
   {name:'Digital wallet',description:'Wallets such as Vodafone Cash',icon:'📱'},
-  {name:'Credit card',description:'Track spending on a credit card',icon:'💳'},
   {name:'Savings account',description:'Money set aside for savings',icon:'🐷'},
   {name:'Other',description:'Another place you keep money',icon:'👛'}
  ];

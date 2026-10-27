@@ -35,6 +35,10 @@ import { customSubcategoriesOverride, expenseCategories, expenseCategoriesOverri
 import { FEATURE_OPTIONS, PAGE_FEATURE, isGoalsAccount } from './lib/features.js';
 import { addFrequency, fmt, getGreeting, localISODate, monthNow, monthStart, titleCaseName, uid } from './lib/format.js';
 import { authRedirectUrl, cloudReady, supabase } from './lib/supabase.js';
+import { CardPayModal } from './features/credit/CardPayModal.jsx';
+import { CreditAccountModal } from './features/credit/CreditAccountModal.jsx';
+import { ProviderPayModal } from './features/credit/ProviderPayModal.jsx';
+import { CARD_TYPE, PROVIDER_TYPE, accountFlows, cardSummary, isCard, isLiability, isMoneyAccount, isProvider, providerSummary } from './lib/credit.js';
 
 function readPocketStartupPage(){ return 'Overview'; }
 
@@ -111,6 +115,13 @@ function App(){
   const [modal,setModal] = useState(null);
   const [confirmDialog,setConfirmDialog] = useState(null);
   const [debtPaymentTarget,setDebtPaymentTarget] = useState(null);
+  const [debtFocus,setDebtFocus] = useState(null);
+  const [creditKind,setCreditKind] = useState('card');
+  const [debtPresetProvider,setDebtPresetProvider] = useState('');
+  const [txPresetAccount,setTxPresetAccount] = useState('');
+  const [cardPay,setCardPay] = useState(null);
+  const [providerPay,setProviderPay] = useState(null);
+  const [accountsView,setAccountsView] = useState('grid');
   const requestConfirm=(title,description,onConfirm,confirmLabel='Delete',options={})=>setConfirmDialog({title,description,onConfirm,confirmLabel,...options});
   const [editing,setEditing] = useState(null);
   const [toast,setToast] = useState('');
@@ -344,6 +355,7 @@ function App(){
         if(v.sidebarSize){setSidebarSize(v.sidebarSize);void 0}
         if(v.profileAvatar){setProfileAvatar(v.profileAvatar);void 0}
         if(v.defaultAccountId!==undefined){setDefaultAccountId(v.defaultAccountId||'');void 0}
+        if(v.accountsView==='list'||v.accountsView==='grid')setAccountsView(v.accountsView);
         if(typeof v.workspaceSectionName==='string'&&v.workspaceSectionName.trim()){setWorkspaceSectionName(v.workspaceSectionName.trim().slice(0,32));setWorkspaceSectionDraft(v.workspaceSectionName.trim().slice(0,32));}
         if(Array.isArray(v.expenseCategories)){void 0;setExpenseCategoriesOverride(v.expenseCategories)}
         if(v.subcategories&&typeof v.subcategories==='object'){setCustomSubcategoriesOverride(v.subcategories);}
@@ -357,10 +369,10 @@ function App(){
     if(!cloudReady||!uid||settingsCloudUserId!==uid)return;
     const subcategories=customSubcategoriesOverride||{};
     const savedCategories=expenseCategoriesOverride||[];
-    (async()=>{const {data:existingRow,error:readError}=await supabase.from('user_settings').select('settings').eq('user_id',uid).maybeSingle();if(readError){console.error('Could not read settings before syncing:',readError.message);return;}const preserved=existingRow?.settings&&typeof existingRow.settings==='object'?existingRow.settings:{};const settings={...preserved,currency,timezone,profileName,theme,design,sidebarSize,profileAvatar,defaultAccountId,workspaceSectionName,
+    (async()=>{const {data:existingRow,error:readError}=await supabase.from('user_settings').select('settings').eq('user_id',uid).maybeSingle();if(readError){console.error('Could not read settings before syncing:',readError.message);return;}const preserved=existingRow?.settings&&typeof existingRow.settings==='object'?existingRow.settings:{};const settings={...preserved,currency,timezone,profileName,theme,design,sidebarSize,profileAvatar,defaultAccountId,accountsView,workspaceSectionName,
       expenseCategories:Array.isArray(savedCategories)?savedCategories:[],subcategories};
     const {error}=await supabase.from('user_settings').upsert({user_id:uid,settings,updated_at:new Date().toISOString()},{onConflict:'user_id'});if(error)console.error('Could not sync settings to Supabase:',error.message);})();
-  },[session?.user?.id,cloudReady,settingsCloudUserId,currency,timezone,profileName,theme,design,sidebarSize,profileAvatar,defaultAccountId,workspaceSectionName,expenseCategoryRevision]);
+  },[session?.user?.id,cloudReady,settingsCloudUserId,currency,timezone,profileName,theme,design,sidebarSize,profileAvatar,defaultAccountId,accountsView,workspaceSectionName,expenseCategoryRevision]);
     const monthTx=useMemo(()=>transactions.filter(t=>(t.transaction_date||'').slice(0,7)===month),[transactions,month]);
   const income=monthTx.filter(t=>t.type==='Income').reduce((s,t)=>s+Number(t.amount||0),0);
   const expenses=monthTx.filter(t=>t.type==='Expense').reduce((s,t)=>s+Number(t.amount||0),0);
@@ -389,8 +401,10 @@ function App(){
   const notificationDueLimit=(()=>{const date=new Date(`${todayISO}T12:00:00`);date.setDate(date.getDate()+2);return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`})();
   const debtReminderInfo=d=>{const raw=String(d.notes||'');const match=raw.match(/\[POCKET_DEBT_DETAILS\]\s*(\{[^\n]*\})/);if(!match)return {reminder:'2 days before',paymentMode:'Installments'};try{const data=JSON.parse(match[1]);return {reminder:data.reminder||'2 days before',paymentMode:data.payment_mode||'Installments'}}catch{return {reminder:'2 days before',paymentMode:'Installments'}}};
   const debtAlerts=debts.filter(d=>{if(!(Number(d.remaining_amount||0)>0&&d.due_date))return false;const pref=debtReminderInfo(d).reminder;const lead=pref==='1 week before'?7:pref==='2 days before'?2:pref==='1 day before'?1:0;const alertStart=new Date(`${d.due_date}T12:00:00`);alertStart.setDate(alertStart.getDate()-lead);const startISO=`${alertStart.getFullYear()}-${String(alertStart.getMonth()+1).padStart(2,'0')}-${String(alertStart.getDate()).padStart(2,'0')}`;return d.due_date<todayISO||todayISO>=startISO;}).map(d=>({id:`debt-${d.id}`,kind:'debt',name:d.name,detail:`${d.due_date<todayISO?'Overdue':d.due_date===todayISO?'Due today':`Due ${debtReminderInfo(d).reminder}`} · ${d.due_date}`,target:'Debts & installments',amount:Number(d.monthly_payment||d.remaining_amount||0)}));
+  const cardAlertLimit=(()=>{const date=new Date(`${todayISO}T12:00:00`);date.setDate(date.getDate()+3);return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`})();
+  const cardAlerts=accounts.filter(isCard).flatMap(c=>cardSummary(c,transactions,todayISO).groups.filter(g=>g.due<=cardAlertLimit).map(g=>({id:`card-${c.id}-${g.due}`,kind:'debt',name:`${c.name} payment`,detail:`${g.due<todayISO?'Overdue':g.due===todayISO?'Due today':'Due soon'} · ${g.due}`,target:'Debts & installments',amount:g.remaining})));
   const notificationPayments=recurring.filter(r=>!r.paid_this_cycle&&r.next_due_date&&r.next_due_date<=notificationDueLimit).sort((a,b)=>(a.next_due_date||'').localeCompare(b.next_due_date||''));
-  const notificationItems=[...budgetAlerts,...debtAlerts,...notificationPayments.map(r=>({id:`recurring-${r.id}`,kind:'recurring',name:r.name,detail:r.next_due_date?`${r.next_due_date<todayISO?'Overdue':r.next_due_date===todayISO?'Due today':'Due soon'} · ${new Date(r.next_due_date+'T12:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'})} · ${r.frequency||'Recurring'}`:'Upcoming payment',target:'Recurring payments',amount:Number(r.amount||0)}))];
+  const notificationItems=[...budgetAlerts,...debtAlerts,...cardAlerts,...notificationPayments.map(r=>({id:`recurring-${r.id}`,kind:'recurring',name:r.name,detail:r.next_due_date?`${r.next_due_date<todayISO?'Overdue':r.next_due_date===todayISO?'Due today':'Due soon'} · ${new Date(r.next_due_date+'T12:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'})} · ${r.frequency||'Recurring'}`:'Upcoming payment',target:'Recurring payments',amount:Number(r.amount||0)}))];
   const allNotificationItems=[...notificationItems,...vehicleReminderNotifications];
   useEffect(()=>{
     const currentIds=new Set(notificationItems.map(item=>String(item.id)));
@@ -475,6 +489,8 @@ function App(){
     const source=accounts.find(a=>String(a.id)===String(form.account_id));
     const destination=form.type==='Transfer'?accounts.find(a=>String(a.id)===String(form.to_account_id)):null;
     if(form.type!=='Transfer'&&isGoalsAccount(source)){setToast('The Goals account can only be used for transfers.');return;}
+    if(isProvider(source)||isProvider(destination)){setToast('Could not use an installment app here. Add a purchase plan from Debts & installments instead.');return;}
+    if(form.type==='Transfer'&&isCard(source)){setToast('Could not move money out of a credit card. Add the purchase as an expense on the card instead.');return;}
     if(form.type==='Transfer'&&(isGoalsAccount(source)||isGoalsAccount(destination))&&(!form.goal_id||!goals.some(g=>String(g.id)===String(form.goal_id)))){setToast('Choose which savings goal this transfer belongs to.');return;}
     if(form.type==='Transfer'&&isGoalsAccount(source)){
       const selectedGoal=goals.find(g=>String(g.id)===String(form.goal_id));
@@ -483,13 +499,13 @@ function App(){
     }
     const sourceIn=transactions.filter(t=>(t.type==='Income'&&String(t.account_id)===String(source?.id))||(t.type==='Transfer'&&String(t.to_account_id)===String(source?.id))).reduce((sum,t)=>sum+Number(t.amount||0),0);
     const sourceOut=transactions.filter(t=>((t.type==='Expense'||t.type==='Transfer')&&String(t.account_id)===String(source?.id))).reduce((sum,t)=>sum+Number(t.amount||0),0);
-    let available=Number(source?.opening_balance||0)+sourceIn-sourceOut;
+    let available=Number(source?.opening_balance||0)+sourceIn-sourceOut+(isCard(source)?(Number(source.credit_limit)>0?Number(source.credit_limit):1e12):0);
     if(editing && String(editing.account_id)===String(source?.id) && (editing.type==='Expense'||editing.type==='Transfer')) available+=Number(editing.amount||0);
-    if((form.type==='Expense'||form.type==='Transfer') && Number(form.amount)>available){setToast(`Insufficient balance in ${source?.name||'this account'}. Available: ${new Intl.NumberFormat('en-EG',{style:'currency',currency,maximumFractionDigits:2}).format(Math.max(0,available))}.`);return;}
+    if((form.type==='Expense'||form.type==='Transfer') && Number(form.amount)>available){const shown=new Intl.NumberFormat('en-EG',{style:'currency',currency,maximumFractionDigits:2}).format(Math.max(0,available));setToast(isCard(source)?`Could not add: this is over the credit limit on ${source.name}. Available credit: ${shown}.`:`Insufficient balance in ${source?.name||'this account'}. Available: ${shown}.`);return;}
     const payload={transaction_date:form.transaction_date,type:form.type,category:form.type==='Transfer'?'Transfer':form.category,subcategory:form.type==='Transfer'?(form.goal_id?(goals.find(g=>String(g.id)===String(form.goal_id))?.name||'Transfer'):'Transfer'):(form.subcategory||null),description:form.description,amount:Number(form.amount),need_want:form.type==='Expense'?form.need_want:null,fixed_variable:form.fixed_variable,payment_method:accounts.find(a=>String(a.id)===String(form.account_id))?.name||'Unassigned',account_id:form.account_id||null,to_account_id:form.type==='Transfer'?form.to_account_id||null:null,goal_id:form.type==='Transfer'?(form.goal_id||null):null,debt_id:form.debt_id||null,recurring:form.type==='Transfer'?false:form.recurring,notes:form.notes};
     const saved=await saveRecord('transactions',payload,editing?.id);if(!saved)return;
     setTransactions(old=>editing?old.map(x=>x.id===editing.id?saved:x):[saved,...old]);
-    setModal(null);setEditing(null);setToast(editing?'Transaction updated':'Transaction added');
+    setModal(null);setEditing(null);setTxPresetAccount('');setToast(editing?'Transaction updated':'Transaction added');
   }
   async function addGoal(form){
     const p={name:form.name,goal_type:form.goal_type||'Other',target_amount:Number(form.target_amount),saved_amount:Number(form.saved_amount||0),target_date:form.target_date||null,notes:form.notes||''};
@@ -531,6 +547,29 @@ function App(){
     const saved=await saveRecord('financial_accounts',payload);if(!saved)return;
     setAccounts(old=>[saved,...old]);setToast('Your account is ready. You can start using Pocket now.');
   }
+  async function saveCreditAccount(form){
+    const isCardKind=form.kind==='card';
+    const owed=Math.abs(Number(form.owed||0));
+    const payload={name:form.name.trim(),type:isCardKind?CARD_TYPE:PROVIDER_TYPE,opening_balance:isCardKind?-owed:0,opening_balance_date:isCardKind&&owed>0?(form.owed_date||localISODate()):(editing?.opening_balance_date||localISODate()),color:form.color||'#6c7cf5',credit_limit:Number(form.limit)||0,statement_day:isCardKind?(Number(form.statement_day)||null):null,grace_days:isCardKind?(form.grace_days===''||form.grace_days==null?25:Number(form.grace_days)):null,pay_from_account_id:form.pay_from||null};
+    const saved=await saveRecord('financial_accounts',payload,editing?.id);if(!saved)return;
+    setAccounts(old=>editing?old.map(x=>x.id===editing.id?saved:x):[...old,saved]);
+    if(!editing&&page==='Debts & installments')setDebtFocus(saved.id);
+    setModal(null);setEditing(null);setToast(isCardKind?'Credit card saved':'Installment app saved');
+  }
+  async function payCreditCard({amount,accountId,paymentDate}){
+    const card=cardPay?.card;const source=accounts.find(a=>String(a.id)===String(accountId));
+    if(!card||!source||!isMoneyAccount(source)){setToast('Choose the account you are paying from.');return false;}
+    const balance=accountFlows(source,transactions).balance;
+    if(Number(amount)>balance){setToast(`Insufficient balance in ${source.name}. Available: ${fmt(balance)}.`);return false;}
+    const payload={transaction_date:paymentDate||localISODate(),type:'Transfer',category:'Transfer',subcategory:'Credit card payment',description:`Payment · ${card.name}`,amount:Number(amount),need_want:null,fixed_variable:'Fixed',payment_method:source.name,account_id:source.id,to_account_id:card.id,goal_id:null,debt_id:null,recurring:false,notes:'Credit card payment'};
+    const saved=await saveRecord('transactions',payload);if(!saved)return false;
+    setTransactions(old=>[saved,...old]);setCardPay(null);setToast(`Paid ${fmt(amount)} to ${card.name}`);return true;
+  }
+  async function payProviderGroup({items,accountId,paymentDate}){
+    const provider=providerPay?.provider;let paid=0;
+    for(const it of items){const ok=await recordDebtInstallment(it.plan,{mode:'transaction',amount:it.amount,accountId,paymentDate});if(!ok){if(paid)setToast(`Paid ${paid} of ${items.length} installments. The rest did not go through.`);return false;}paid++;}
+    setProviderPay(null);setToast(`Paid ${items.length} installment${items.length===1?'':'s'} on ${provider?.name||'your app'}`);return true;
+  }
   async function saveDebt(form){
     const principal=Number(form.original_amount||0), installment=Number(form.monthly_payment||0), term=Math.max(0,Number(form.term_months||0));
     const totalRepayment=term>0&&installment>0?Number((installment*term).toFixed(2)):Number(form.total_repayment||principal);
@@ -538,9 +577,12 @@ function App(){
     const amountPaid=Math.min(totalRepayment,Math.max(0,Number((paidCount*installment).toFixed(2))));
     const remaining=Math.max(0,Number((totalRepayment-amountPaid).toFixed(2)));
     const interestRate=principal>0&&totalRepayment>0?Number((((totalRepayment-principal)/principal)*100).toFixed(2)):0;
-    const payload={name:form.name.trim(),debt_type:form.debt_type||'Other',lender:form.lender||'',account_id:form.account_id||null,original_amount:principal,remaining_amount:remaining,monthly_payment:installment,due_date:form.due_date||null,frequency:'Monthly',notes:form.notes||'',start_date:form.start_date||null,term_months:term||null,total_repayment:totalRepayment,interest_rate:interestRate,paid_installments:paidCount,amount_paid:amountPaid};
+    const providerId=['Installment','Buy now, pay later'].includes(form.debt_type)?(form.provider_account_id||null):null;
+    const providerAcc=providerId?accounts.find(a=>String(a.id)===String(providerId)):null;
+    if(providerAcc&&Number(providerAcc.credit_limit)>0){const avail=providerSummary(providerAcc,debts).available+(editing&&String(editing.provider_account_id)===String(providerAcc.id)?Number(editing.remaining_amount||0):0);if(remaining>avail+0.005){setToast(`Could not save: only ${fmt(avail)} is left on ${providerAcc.name}.`);return;}}
+    const payload={provider_account_id:providerId,name:form.name.trim(),debt_type:form.debt_type||'Other',lender:form.lender||'',account_id:form.account_id||null,original_amount:principal,remaining_amount:remaining,monthly_payment:installment,due_date:form.due_date||null,frequency:'Monthly',notes:form.notes||'',start_date:form.start_date||null,term_months:term||null,total_repayment:totalRepayment,interest_rate:interestRate,paid_installments:paidCount,amount_paid:amountPaid};
     const saved=await saveRecord('debts',payload,editing?.id);if(!saved)return;
-    setDebts(old=>editing?old.map(x=>x.id===editing.id?saved:x):[saved,...old]);setModal(null);setEditing(null);setToast('Debt saved');
+    setDebts(old=>editing?old.map(x=>x.id===editing.id?saved:x):[saved,...old]);setModal(null);setEditing(null);setDebtPresetProvider('');setToast('Debt saved');
   }
   async function recordDebtInstallment(debt, options={}){
     if(typeof options==='string') options={accountId:options};
@@ -549,6 +591,7 @@ function App(){
     const account=accounts.find(a=>String(a.id)===String(accountId));
     if(mode==='transaction'&&!account){setToast('Choose the account to pay this installment from.');return false;}
     if(mode==='transaction'&&isGoalsAccount(account)){setToast('The Goals account can only be used for transfers.');return false;}
+    if(mode==='transaction'&&isLiability(account)){setToast('Choose a bank, cash or wallet account to pay from.');return false;}
     const total=Number(debt.total_repayment||debt.original_amount||0), installment=Number(debt.monthly_payment||0), paid=Number(debt.paid_installments||0), amountPaid=Number(debt.amount_paid??Math.max(0,total-Number(debt.remaining_amount||0)));
     const installmentAmount=Math.min(installment,Number(debt.remaining_amount||0));
     const actualPaid=mode==='transaction'?Number(enteredAmount??installmentAmount):Number(enteredAmount??installmentAmount);
@@ -761,7 +804,7 @@ function App(){
         setTransactions(t.data||[]);setRecurring(rec.data||[]);
       } else {
         if(r.last_paid_date&&r.next_due_date&&paidDate<r.next_due_date)throw new Error('This payment was already recorded for the current cycle.');
-        const account=accounts.find(a=>String(a.id)===String(r.account_id));if(!account)throw new Error('Choose an account or wallet in this recurring payment before marking it paid.');if(isGoalsAccount(account))throw new Error('The Goals account can only be used for transfers.');const accountIn=transactions.filter(t=>(t.type==='Income'&&String(t.account_id)===String(account.id))||(t.type==='Transfer'&&String(t.to_account_id)===String(account.id))).reduce((sum,t)=>sum+Number(t.amount||0),0);const accountOut=transactions.filter(t=>((t.type==='Expense'||t.type==='Transfer')&&String(t.account_id)===String(account.id))).reduce((sum,t)=>sum+Number(t.amount||0),0);const available=Number(account.opening_balance||0)+accountIn-accountOut;if(Number(r.amount)>available)throw new Error(`Insufficient balance in ${account.name}. Available: ${fmt(available)}.`);const tx={transaction_date:paidDate,type:'Expense',category:r.category||'Bills & Utilities',subcategory:r.subcategory||null,description:`Recurring payment: ${r.name}`,amount:Number(r.amount)||0,need_want:'Need',fixed_variable:'Fixed',payment_method:account.name,account_id:account.id,recurring:true,notes:`Generated from recurring payment ${r.name}`};
+        const account=accounts.find(a=>String(a.id)===String(r.account_id));if(!account)throw new Error('Choose an account or wallet in this recurring payment before marking it paid.');if(isGoalsAccount(account))throw new Error('The Goals account can only be used for transfers.');const accountIn=transactions.filter(t=>(t.type==='Income'&&String(t.account_id)===String(account.id))||(t.type==='Transfer'&&String(t.to_account_id)===String(account.id))).reduce((sum,t)=>sum+Number(t.amount||0),0);const accountOut=transactions.filter(t=>((t.type==='Expense'||t.type==='Transfer')&&String(t.account_id)===String(account.id))).reduce((sum,t)=>sum+Number(t.amount||0),0);if(isProvider(account))throw new Error('Choose a bank, cash, wallet or credit card account for this payment.');const available=Number(account.opening_balance||0)+accountIn-accountOut+(isCard(account)?(Number(account.credit_limit)>0?Number(account.credit_limit):1e12):0);if(Number(r.amount)>available)throw new Error(`Insufficient balance in ${account.name}. Available: ${fmt(available)}.`);const tx={transaction_date:paidDate,type:'Expense',category:r.category||'Bills & Utilities',subcategory:r.subcategory||null,description:`Recurring payment: ${r.name}`,amount:Number(r.amount)||0,need_want:'Need',fixed_variable:'Fixed',payment_method:account.name,account_id:account.id,recurring:true,notes:`Generated from recurring payment ${r.name}`};
         const savedTx={...tx,id:uid()};
         const nextDue=addFrequency(r.next_due_date||paidDate,r.frequency);
         const updated={...r,next_due_date:nextDue,paid_this_cycle:true,last_paid_date:paidDate};
@@ -825,6 +868,17 @@ function App(){
   const getPageFeature=(name)=>PAGE_FEATURE[name]||'overview';
   const visibleNavGroups=[{label:'WORKSPACE',items:[['Overview',LayoutDashboard],['Transactions',ArrowLeftRight],['Accounts',Wallet],['Cash flow calendar',CalendarDays],['Budgets',CreditCard],['Savings goals',Target],['Subscriptions & bills',Repeat2],['Debts & installments',CircleDollarSign]]},{label:'ANALYZE',items:[['Insights & reports',ChartNoAxesCombined]]}].map(g=>({...g,items:g.items.filter(([name])=>allowedFeatures.includes(getPageFeature(name)))})).filter(g=>g.items.length);
   const canSeeCurrentPage=['Admin access','Access requests','Access management'].includes(page)?isAdmin:page==='Access restricted'?true:allowedFeatures.includes(getPageFeature(page));
+  const openCredit=id=>{setDebtFocus(id);setPage('Debts & installments')};
+  const creditActions={
+    open:openCredit,
+    addCard:()=>{setEditing(null);setCreditKind('card');setModal('credit-account')},
+    addProviderApp:()=>{setEditing(null);setCreditKind('provider');setModal('credit-account')},
+    editAccount:a=>{setEditing(a);setCreditKind(isCard(a)?'card':'provider');setModal('credit-account')},
+    payCard:(card,choice=0)=>setCardPay({card,choice}),
+    payProvider:(provider,group)=>setProviderPay({provider,group}),
+    addPurchase:card=>{setEditing(null);setTxPresetAccount(card.id);setModal('transaction')},
+    addPlan:provider=>{setEditing(null);setDebtPresetProvider(provider.id);setModal('debt')}
+  };
   if(cloudReady && (authLoading || (session && !profileLoaded))) return <main className="pocket-loading-screen" role="status" aria-live="polite" aria-label="Loading Pocket">
     <div className="pocket-loading-glow pocket-loading-glow-one" aria-hidden="true"/><div className="pocket-loading-glow pocket-loading-glow-two" aria-hidden="true"/>
     <section className="pocket-loading-card">
@@ -846,7 +900,7 @@ function App(){
       {visibleNavGroups.filter(group=>group.label==='WORKSPACE').map(group=><div className="nav-group sidebar-flat-group" key={group.label}>{group.items.filter(([name])=>['Overview','Transactions','Accounts'].includes(name)).map(([name,Icon])=><button key={name} className={`nav-item ${page===name?'active':''}`} onClick={()=>{setPage(name);setSidebarOpen(false)}}><Icon size={18}/><span>{name}</span>{name==='Transactions'&&<span className="nav-count">{transactions.length}</span>}</button>)}</div>)}
       {visibleNavGroups.filter(group=>group.label==='ANALYZE').map(group=><div className="nav-group sidebar-flat-group" key={group.label}>{group.items.map(([name,Icon])=><button key={name} className={`nav-item ${page===name?'active':''}`} onClick={()=>{setPage(name);setSidebarOpen(false)}}><Icon size={18}/><span>{name}</span></button>)}</div>)}
       <div className="sidebar-section-heading"><span>PLAN</span></div>
-      {visibleNavGroups.filter(group=>group.label==='WORKSPACE').map(group=><div className="nav-group sidebar-flat-group" key={'plan-'+group.label}>{group.items.filter(([name])=>['Cash flow calendar','Budgets','Savings goals','Subscriptions & bills','Debts & installments'].includes(name)).map(([name,Icon])=><button key={name} className={`nav-item ${page===name?'active':''}`} onClick={()=>{setPage(name);setSidebarOpen(false)}}><Icon size={18}/><span>{name}</span></button>)}</div>)}
+      {visibleNavGroups.filter(group=>group.label==='WORKSPACE').map(group=><div className="nav-group sidebar-flat-group" key={'plan-'+group.label}>{group.items.filter(([name])=>['Cash flow calendar','Budgets','Savings goals','Subscriptions & bills','Debts & installments'].includes(name)).map(([name,Icon])=><button key={name} className={`nav-item ${page===name?'active':''}`} onClick={()=>{setDebtFocus(null);setPage(name);setSidebarOpen(false)}}><Icon size={18}/><span>{name}</span></button>)}</div>)}
       {allowedFeatures.includes('vehicle_management')&&<><div className="sidebar-section-heading"><span>VEHICLES</span></div><div className="nav-group sidebar-flat-group">{[['vehicles','My vehicles',CarFront],['maintenance','Maintenance',Wrench],['history','Service history',History],['fuel','Fuel log',Fuel]].map(([key,label,Icon])=><button key={key} className={`nav-item ${page==='Vehicle Management'&&vehicleSidebarTab===key?'active':''}`} onClick={()=>{setVehicleSidebarTab(key);setPage('Vehicle Management');setSidebarOpen(false)}}><Icon size={18}/><span>{label}</span></button>)}</div></>}
       {(isAdmin||allowedFeatures.includes('expense_categories'))&&<><div className="sidebar-section-heading"><span>ADMIN</span></div><div className="nav-group sidebar-flat-group">{isAdmin&&<><button className={`nav-item ${page==='Access requests'?'active':''}`} onClick={()=>{setPage('Access requests');setSidebarOpen(false)}}><Mail size={18}/><span>Requests</span><span className="nav-count">{accessRequestCounts.pending}</span></button><button className={`nav-item ${page==='Admin access'?'active':''}`} onClick={()=>{setPage('Admin access');setSidebarOpen(false)}}><Users size={18}/><span>Users</span></button></>}{(isAdmin||allowedFeatures.includes('expense_categories'))&&<button className={`nav-item ${page==='Expense categories'?'active':''}`} onClick={()=>{setPage('Expense categories');setSidebarOpen(false)}}><SlidersHorizontal size={18}/><span>Expense categories</span></button>}</div></>}
       <div className="sidebar-bottom"><div className="sidebar-profile"><span className="sidebar-profile-avatar avatar-image"><ProfileAvatar value={profileAvatar}/></span><button className="sidebar-profile-copy" onClick={()=>setModal('profile')}><b>{displayName}</b><span>View profile</span></button><button type="button" className="icon-btn sidebar-settings-button" onClick={()=>setModal('app-settings')} title="Settings" aria-label="Settings"><Settings size={18}/></button></div></div>
@@ -862,11 +916,11 @@ function App(){
         {page==='Expense categories'&&(isAdmin||allowedFeatures.includes('expense_categories'))&&<ExpenseCategoriesPage session={session} supabase={supabase}/>}
         {canSeeCurrentPage&&page==='Vehicle Management'&&<VehicleManagementPage session={session} supabase={supabase} transactions={transactions} setTransactions={setTransactions} accounts={accounts} currency={currency} onToast={setToast} requestedTab={vehicleSidebarTab}/>}
         {['Access management','Admin access','Access requests'].includes(page)&&isAdmin&&<AccessManagementPage supabase={supabase} onToast={setToast} users={adminUsers} loading={adminLoading} profile={profile} onUpdate={updateUserAccess} onDelete={deleteManagedUser} onCreate={createManagedUser} onRefresh={refreshAdminUsers} initialTab={page==='Admin access'?'users':'requests'}/>}
-        {canSeeCurrentPage&&page==='Overview'&&<Overview {...{month,setMonth,transactions,accounts,monthTx,income,expenses,net,savingsRate,monthlySeries,categoryData,needs,wants,monthBudgets,totalBudget,totalSaved,goalTarget,upcoming,goals,setPage,setModal,setEditing,setToast,displayName,greeting,profileAvatar,session,supabase,currency,setVehicleSidebarTab,canViewVehicles:allowedFeatures.includes('vehicle_management')}}/>}
+        {canSeeCurrentPage&&page==='Overview'&&<Overview {...{debts,creditActions,month,setMonth,transactions,accounts,monthTx,income,expenses,net,savingsRate,monthlySeries,categoryData,needs,wants,monthBudgets,totalBudget,totalSaved,goalTarget,upcoming,goals,setPage,setModal,setEditing,setToast,displayName,greeting,profileAvatar,session,supabase,currency,setVehicleSidebarTab,canViewVehicles:allowedFeatures.includes('vehicle_management')}}/>}
         {canSeeCurrentPage&&page==='Transactions'&&<TransactionsPage {...{transactions,accounts,debts,filtered,search,setSearch,typeFilter,setTypeFilter,categoryFilter,setCategoryFilter,amountSort,setAmountSort,setModal,setEditing,setPage,setToast,removeRecord,setTransactions,handleImport,exportCSV,currency,requestConfirm,recordDebtInstallment,activeCategoryOptions:getExpenseCategories(profile?.gender)}}/>}
-        {canSeeCurrentPage&&page==='Accounts'&&<AccountsPage {...{accounts,transactions,setModal,setEditing,removeRecord,setAccounts,currency,requestConfirm,defaultAccountId,setDefaultAccountId}}/>}
-        {canSeeCurrentPage&&page==='Cash flow calendar'&&<CashFlowCalendar {...{transactions,recurring,month,setMonth,currency}}/>}
-        {canSeeCurrentPage&&page==='Debts & installments'&&<DebtsPage {...{debts,accounts,setModal,setEditing,removeRecord,setDebts,currency,requestConfirm,recordDebtInstallment,setDebtPaymentTarget,setToast}}/>}
+        {canSeeCurrentPage&&page==='Accounts'&&<AccountsPage {...{debts,creditActions,accountsView,setAccountsView,accounts,transactions,setModal,setEditing,removeRecord,setAccounts,currency,requestConfirm,defaultAccountId,setDefaultAccountId}}/>}
+        {canSeeCurrentPage&&page==='Cash flow calendar'&&<CashFlowCalendar {...{transactions,recurring,accounts,debts,month,setMonth,currency}}/>}
+        {canSeeCurrentPage&&page==='Debts & installments'&&<DebtsPage {...{debts,accounts,transactions,debtFocus,setDebtFocus,credit:creditActions,setAccounts,setModal,setEditing,removeRecord,setDebts,currency,requestConfirm,recordDebtInstallment,setDebtPaymentTarget,setToast}}/>}
         {canSeeCurrentPage&&(page==='Insights & reports'||page==='Insights & forecast'||page==='Reports')&&<InsightsReportsPage {...{transactions,month,setMonth,budgets,recurring,goals,debts,currency,setPage,accounts}}/>}
         {canSeeCurrentPage&&page==='Budgets'&&<BudgetsPage {...{budgets,transactions,month,setMonth,setModal,setEditing,setToast,removeRecord,setBudgets,requestConfirm}}/>}
         {canSeeCurrentPage&&page==='Savings goals'&&<GoalsPage {...{goals,transactions,accounts,setModal,setEditing,setToast,removeRecord,setGoals,totalSaved,goalTarget,requestConfirm}}/>}
@@ -875,7 +929,7 @@ function App(){
       </div>
       <footer className="footer"><span>Pocket Finance <span className="footer-dot">•</span> Make room for what matters.</span><span>Currency: {currency}</span></footer>
     </main>
-    {(modal==='transaction'||modal==='account-from-transaction')&&<TransactionModal currency={currency} accounts={accounts} goals={goals} debts={debts} recordDebtInstallment={recordDebtInstallment} defaultAccountId={defaultAccountId} gender={session?.user?.user_metadata?.gender||''} session={session} initial={editing} onClose={()=>{setModal(null);setEditing(null)}} onSave={submitTransaction} onAddAccount={()=>setModal('account-from-transaction')}/>}
+    {(modal==='transaction'||modal==='account-from-transaction')&&<TransactionModal presetAccountId={txPresetAccount} transactions={transactions} currency={currency} accounts={accounts} goals={goals} debts={debts} recordDebtInstallment={recordDebtInstallment} defaultAccountId={defaultAccountId} gender={session?.user?.user_metadata?.gender||''} session={session} initial={editing} onClose={()=>{setModal(null);setEditing(null);setTxPresetAccount('')}} onSave={submitTransaction} onAddAccount={()=>setModal('account-from-transaction')}/>}
     {modal==='goal'&&<GoalModal currency={currency} initial={editing} onClose={()=>{setModal(null);setEditing(null)}} onSave={addGoal}/>}
     {modal==='recurring'&&<RecurringModal currency={currency} accounts={accounts} initial={editing} onClose={()=>{setModal(null);setEditing(null)}} onSave={addRecurring}/>}
     {modal==='budget'&&<BudgetModal currency={currency} initial={editing} month={month} onClose={()=>{setModal(null);setEditing(null)}} onSave={addBudget}/>}
@@ -884,7 +938,10 @@ function App(){
     {modal==='avatar-picker'&&<AvatarPickerModal current={profileAvatar} gender={avatarPickerGender} onClose={()=>setModal('profile')} onChoose={avatar=>{setProfileAvatar(avatar);setModal('profile')}} />}
     {modal==='account'&&<AccountModal initial={editing} onClose={()=>{setModal(null);setEditing(null)}} onSave={saveAccount}/> }
     {modal==='account-from-transaction'&&<AccountModal initial={null} onClose={()=>setModal('transaction')} onSave={async form=>{const payload={name:form.name.trim(),type:form.type,opening_balance:Number(form.opening_balance||0),opening_balance_date:form.opening_balance_date||localISODate(),color:form.color||'#6c7cf5'};const saved=await saveRecord('financial_accounts',payload);if(!saved)return;setAccounts(old=>[saved,...old]);setModal('transaction');setToast('Account added. Select it for your transaction.')}}/>}
-    {modal==='debt'&&<DebtModal currency={currency} accounts={accounts} initial={editing} onClose={()=>{setModal(null);setEditing(null)}} onSave={saveDebt}/> }
+    {modal==='debt'&&<DebtModal currency={currency} accounts={accounts} debts={debts} providerAccounts={accounts.filter(isProvider)} presetProviderId={debtPresetProvider} onChooseAccountKind={kind=>{setEditing(null);setDebtPresetProvider('');setCreditKind(kind);setModal('credit-account')}} initial={editing} onClose={()=>{setModal(null);setEditing(null);setDebtPresetProvider('')}} onSave={saveDebt}/> }
+    {modal==='credit-account'&&<CreditAccountModal kind={creditKind} currency={currency} accounts={accounts} initial={editing} onClose={()=>{setModal(null);setEditing(null)}} onSave={saveCreditAccount}/>}
+    {cardPay&&<CardPayModal card={accounts.find(a=>String(a.id)===String(cardPay.card.id))||cardPay.card} summary={cardSummary(accounts.find(a=>String(a.id)===String(cardPay.card.id))||cardPay.card,transactions)} accounts={accounts} transactions={transactions} currency={currency} initialChoice={cardPay.choice} onClose={()=>setCardPay(null)} onSubmit={payCreditCard}/>}
+    {providerPay&&<ProviderPayModal provider={providerPay.provider} group={providerPay.group} accounts={accounts} transactions={transactions} currency={currency} onClose={()=>setProviderPay(null)} onSubmit={payProviderGroup}/>}
     {modal==='debt-payment'&&debtPaymentTarget&&<DebtPaymentChoiceModal debt={debtPaymentTarget} accounts={accounts} currency={currency} onClose={()=>{setModal(null);setDebtPaymentTarget(null)}} onSubmit={async opts=>{const ok=await recordDebtInstallment(debtPaymentTarget,opts);if(ok){setModal(null);setDebtPaymentTarget(null)}}}/> }
     {modal==='import'&&<ImportModal rows={importPreview} onClose={()=>{setModal(null);setImportPreview([])}} onConfirm={confirmImport}/>}
     {confirmDialog&&<ConfirmActionModal dialog={confirmDialog} onCancel={()=>setConfirmDialog(null)} onConfirm={async()=>{const action=confirmDialog.onConfirm;setConfirmDialog(null);await action?.()}}/>}
